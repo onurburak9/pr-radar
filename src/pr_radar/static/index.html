@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PR radar</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --fg:#1d1d1f; --muted:#6e6e73; --line:#ececf0; --bg:#fff; --head:#fafafb; --hover:#f5f8ff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg:#e8e8ed; --muted:#98989f; --line:#2c2c30; --bg:#161618; --head:#1d1d20; --hover:#1f2633; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:13px/1.4 -apple-system, system-ui, sans-serif; color:var(--fg); background:var(--bg); }
+  header { position:sticky; top:0; z-index:2; background:var(--bg); border-bottom:1px solid var(--line);
+           padding:10px 20px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0 8px 0 0; }
+  select, input, button { font:inherit; color:inherit; background:var(--head); border:1px solid var(--line);
+           border-radius:6px; padding:4px 8px; }
+  button { cursor:pointer; }
+  input[type=search] { width:220px; }
+  .meta { margin-left:auto; color:var(--muted); font-size:12px; }
+  .banner { margin:12px 20px 0; padding:10px 14px; border-radius:8px; background:#fde2e1; color:#912018; font-weight:600; }
+  .banner.starting { background:#fef0c7; color:#93370d; }
+  main { padding:0 20px 40px; }
+  section { margin-top:18px; }
+  section h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:0 0 6px;
+               display:flex; gap:8px; align-items:center; cursor:default; }
+  section h2 .n { background:var(--head); border:1px solid var(--line); border-radius:10px; padding:0 8px; font-size:11px; }
+  section.collapsed table { display:none; }
+  section h2 .toggle { cursor:pointer; user-select:none; }
+  table { width:100%; border-collapse:collapse; table-layout:fixed; }
+  th { text-align:left; font-weight:600; font-size:12px; color:var(--muted); padding:6px 8px; border-bottom:1px solid var(--line);
+       background:var(--head); cursor:pointer; user-select:none; white-space:nowrap; }
+  th.sorted::after { content:" ▾"; } th.sorted.asc::after { content:" ▴"; }
+  td { padding:7px 8px; border-bottom:1px solid var(--line); vertical-align:top; overflow:hidden; text-overflow:ellipsis; }
+  tr:hover td { background:var(--hover); }
+  .c-repo { width:120px; } .c-num { width:64px; } .c-status { width:260px; } .c-act { width:90px; } .c-age { width:64px; } .c-x { width:64px; }
+  .title a { color:inherit; text-decoration:none; font-weight:500; } .title a:hover { text-decoration:underline; }
+  .sub { color:var(--muted); font-size:11px; margin-top:2px; }
+  .pill { display:inline-block; border-radius:10px; padding:1px 8px; font-size:11px; font-weight:600; white-space:nowrap; }
+  .s-dropped_from_queue, .s-ci_failed { background:#fde2e1; color:#b42318; }
+  .s-assigned_ready, .s-review_requested { background:#fef0c7; color:#93370d; }
+  .s-new_comments { background:#dbeafe; color:#1e40af; }
+  .s-in_merge_queue, .s-merged { background:#dcfce7; color:#166534; }
+  .s-waiting { background:#eee; color:#555; }
+  .detail { color:var(--muted); font-size:11px; margin-top:3px; white-space:normal; }
+  .detail a { color:inherit; }
+  .num, .age, .act { color:var(--muted); font-variant-numeric:tabular-nums; }
+  .x { font-size:11px; padding:2px 6px; }
+  .empty { color:var(--muted); padding:10px 8px; }
+  footer { color:var(--muted); font-size:11px; padding:0 20px 20px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>PR radar</h1>
+  <input type="search" id="q" placeholder="Filter title / number / author">
+  <select id="f-repo"><option value="">All repos</option></select>
+  <select id="f-rel">
+    <option value="">Any relation</option>
+    <option value="author">Author</option><option value="assignee">Assignee</option>
+    <option value="reviewer">Reviewer</option><option value="commenter">Commenter</option>
+    <option value="review_requested">Review requested</option>
+  </select>
+  <select id="f-status">
+    <option value="">Any status</option>
+    <option value="dropped_from_queue">Dropped from queue</option><option value="ci_failed">CI failed</option>
+    <option value="assigned_ready">Assigned, ready</option><option value="review_requested">Review requested</option>
+    <option value="new_comments">New comments</option><option value="in_merge_queue">In merge queue</option>
+    <option value="waiting">Waiting on others</option><option value="merged">Merged</option>
+  </select>
+  <button id="refresh" title="Poll GitHub now">⟳ Refresh</button>
+  <span class="meta" id="meta"></span>
+</header>
+<div id="banner"></div>
+<main id="main"></main>
+<footer id="footer"></footer>
+
+<script>
+const GROUPS = [
+  ["needs_you", "Needs you"], ["in_flight", "In flight"], ["done", "Merged (last 24h)"], ["parked", "Parked"],
+];
+const STATUS_ORDER = ["dropped_from_queue","ci_failed","assigned_ready","review_requested","new_comments",
+                      "in_merge_queue","waiting","merged"];
+const COLS = [
+  ["repo", "Repo", "c-repo"], ["number", "#", "c-num"], ["title", "Title", ""], ["status", "Status", "c-status"],
+  ["last_activity", "Activity", "c-act"], ["created_at", "Age", "c-age"], [null, "", "c-x"],
+];
+const saved = JSON.parse(localStorage.getItem("pr-radar") || "{}");
+const ui = Object.assign({ sort: "last_activity", asc: false, q: "", repo: "", rel: "", status: "",
+                           collapsed: { parked: true } }, saved);
+let snap = null;
+
+const $ = (id) => document.getElementById(id);
+const save = () => localStorage.setItem("pr-radar", JSON.stringify(ui));
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+
+function rel(iso) {
+  const s = (Date.now() - Date.parse(iso)) / 1000;
+  if (s < 3600) return Math.max(1, Math.round(s / 60)) + "m";
+  if (s < 86400) return Math.round(s / 3600) + "h";
+  return Math.round(s / 86400) + "d";
+}
+
+function sortKey(r, k) {
+  if (k === "status") return STATUS_ORDER.indexOf(r.status);
+  if (k === "last_activity" || k === "created_at") return Date.parse(r[k]);
+  return typeof r[k] === "string" ? r[k].toLowerCase() : r[k];
+}
+
+function filtered(rows) {
+  const q = ui.q.trim().toLowerCase();
+  return rows.filter((r) =>
+    (!ui.repo || r.repo === ui.repo) &&
+    (!ui.rel || r.relations.includes(ui.rel)) &&
+    (!ui.status || r.status === ui.status) &&
+    (!q || `${r.title} ${r.number} ${r.author} ${r.repo}`.toLowerCase().includes(q)));
+}
+
+function rowHtml(r) {
+  const checks = r.failing_checks.length
+    ? r.failing_checks.slice(0, 5).map((c) => c.url ? `<a href="${esc(c.url)}" target="_blank">${esc(c.name)}</a>` : esc(c.name)).join(" · ")
+      + (r.failing_checks.length > 5 ? ` +${r.failing_checks.length - 5}` : "")
+    : esc(r.detail);
+  const parked = r.parked_reason ? `<div class="detail">parked: ${esc(r.parked_reason)}</div>` : "";
+  const comments = r.new_comment_count && r.status !== "new_comments" ? ` · 💬 ${r.new_comment_count} new` : "";
+  const hidden = r.parked_reason === "hidden";
+  const btn = r.group === "done" ? "" :
+    `<button class="x" data-act="${hidden ? "unhide" : "hide"}" data-id="${esc(r.id)}">${hidden ? "Unhide" : "Hide"}</button>`;
+  const [owner, name] = r.repo.split("/");
+  return `<tr>
+    <td class="c-repo">${esc(name)}</td>
+    <td class="num">${r.number}</td>
+    <td class="title"><a href="/open/${esc(owner)}/${esc(name)}/${r.number}" target="_blank">${esc(r.title)}</a>
+      <div class="sub">${esc(r.author)}${r.is_draft ? " · draft" : ""} · you: ${esc(r.relations.join(", ").replaceAll("_", " "))}${comments}</div></td>
+    <td><span class="pill s-${r.status}">${esc(r.label)}</span>${checks ? `<div class="detail">${checks}</div>` : ""}${parked}</td>
+    <td class="act">${rel(r.last_activity)}</td>
+    <td class="age">${rel(r.created_at)}</td>
+    <td>${btn}</td></tr>`;
+}
+
+function render() {
+  if (!snap) return;
+  const h = snap.health;
+  const banner = $("banner");
+  banner.className = "";
+  banner.innerHTML = "";
+  if (h.state !== "ok") {
+    const soft = h.state === "starting" || h.state === "refreshing";
+    banner.className = "banner" + (soft ? " starting" : "");
+    banner.textContent = soft ? "⟳ " + h.message : "⚠ " + h.message;
+  }
+  const lo = h.last_ok;
+  $("meta").textContent = lo ? `updated ${rel(lo.at)} ago · ${lo.prs} PRs · ${lo.seconds}s` : "";
+  const p = h.process || {};
+  $("footer").textContent = lo
+    ? `Last poll: ${lo.requests} requests, ${lo.cost} GraphQL points (${lo.rate_remaining} left, resets ${new Date(lo.rate_reset_at).toLocaleTimeString()}) · ` +
+      `server RSS ${p.rss_mb} MB, CPU ${p.cpu_seconds}s since start, ${p.threads} threads`
+    : "";
+
+  const rows = filtered(snap.rows).sort((a, b) => {
+    const x = sortKey(a, ui.sort), y = sortKey(b, ui.sort);
+    return (x < y ? -1 : x > y ? 1 : 0) * (ui.asc ? 1 : -1);
+  });
+  const head = "<tr>" + COLS.map(([k, label, cls]) =>
+    `<th class="${cls} ${k === ui.sort ? "sorted" + (ui.asc ? " asc" : "") : ""}" ${k ? `data-sort="${k}"` : ""}>${label}</th>`).join("") + "</tr>";
+  $("main").innerHTML = GROUPS.map(([g, title]) => {
+    const rs = rows.filter((r) => r.group === g);
+    if (g === "done" && !rs.length) return "";
+    const collapsed = ui.collapsed[g];
+    return `<section id="${g === "parked" ? "parked" : g}" class="${collapsed ? "collapsed" : ""}">
+      <h2><span class="toggle" data-toggle="${g}">${collapsed ? "▸" : "▾"} ${title}</span><span class="n">${rs.length}</span></h2>
+      <table><thead>${head}</thead><tbody>${rs.length ? rs.map(rowHtml).join("") : `<tr><td colspan="7" class="empty">Nothing here.</td></tr>`}</tbody></table>
+    </section>`;
+  }).join("");
+  const needs = snap.counts.needs_you;
+  document.title = (h.state === "error" || h.state === "stale" ? "⚠ " : "") + (needs ? `(${needs}) ` : "") + "PR radar";
+}
+
+let scrolled = false;
+async function load() {
+  try {
+    const r = await fetch("/api/state", { cache: "no-store" });
+    snap = await r.json();
+    const sel = $("f-repo");
+    if (sel.options.length === 1) {
+      for (const repo of snap.repos) sel.add(new Option(repo.split("/")[1], repo));
+      sel.value = ui.repo;
+    }
+  } catch (e) {
+    snap = snap || { rows: [], counts: {}, repos: [], health: {} };
+    snap.health = { state: "error", message: "PR radar server is not reachable" };
+  }
+  render();
+  if (!scrolled && location.hash.length > 1 && snap.rows.length) {  // sections render after fetch, so jump by hand
+    scrolled = true;
+    document.getElementById(location.hash.slice(1))?.scrollIntoView();
+  }
+}
+
+async function post(path) {
+  await fetch(path, { method: "POST", headers: { "X-PR-Radar": "1" } });
+}
+
+document.addEventListener("click", async (e) => {
+  const t = e.target;
+  if (t.dataset.sort) {
+    ui.asc = ui.sort === t.dataset.sort ? !ui.asc : false;
+    ui.sort = t.dataset.sort; save(); render();
+  } else if (t.dataset.toggle) {
+    ui.collapsed[t.dataset.toggle] = !ui.collapsed[t.dataset.toggle]; save(); render();
+  } else if (t.dataset.act) {
+    await post(`/api/${t.dataset.act}/${encodeURIComponent(t.dataset.id)}`); load();
+  } else if (t.closest(".title a")) {
+    setTimeout(load, 500); // /open marked it seen
+  }
+});
+$("refresh").onclick = async () => {
+  const btn = $("refresh"); btn.disabled = true; btn.textContent = "⟳ Polling…";
+  const before = snap?.health?.last_attempt_done;
+  await post("/api/refresh");
+  for (let i = 0; i < 40; i++) {  // up to ~60s
+    await new Promise((r) => setTimeout(r, 1500));
+    const h = await (await fetch("/api/health", { cache: "no-store" })).json();
+    if (h.last_attempt_done !== before && !h.polling) break;
+  }
+  btn.disabled = false; btn.textContent = "⟳ Refresh"; load();
+};
+for (const [id, key] of [["q", "q"], ["f-repo", "repo"], ["f-rel", "rel"], ["f-status", "status"]]) {
+  $(id).value = ui[key];
+  $(id).addEventListener("input", () => { ui[key] = $(id).value; save(); render(); });
+}
+if (location.hash === "#parked") ui.collapsed.parked = false;
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>

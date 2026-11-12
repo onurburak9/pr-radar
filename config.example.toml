@@ -1,0 +1,34 @@
+# PR radar configuration. Copy to config.toml, edit, then run `make restart`.
+
+# GitHub account whose token is used (`gh auth token --user <login>`) and whose
+# involvement (author, assignee, reviewer, commenter, review requested) decides
+# which PRs are listed.
+github_login = "your-github-login"
+
+# Repositories to watch, as owner/name.
+repos = [
+  "your-org/your-repo",
+  "your-org/another-repo",
+]
+
+poll_interval_seconds = 120   # minimum 30
+port = 7777
+stale_days = 14               # no activity for this long -> Parked
+merged_visible_hours = 24     # how long merged PRs stay in "Merged"
+
+# A PR assigned to you (and written by someone else) shows "Assigned, ready for
+# review" once it's out of draft, its checks have finished, and you haven't
+# reviewed its latest commit. Leave empty to accept any author, or list logins
+# (e.g. a coding-agent bot) to limit it to PRs built for you.
+assigned_ready_authors = []
+
+# Comments from these logins never count as "new comments" (Bot-typed authors
+# are always ignored too).
+bot_logins_ignored_for_comments = ["github-actions", "codecov"]
+
+# Check names that never count as failed or still running, e.g. a required
+# approval status that stays pending until a human approves.
+ignore_checks = []
+
+# Also count review requests sent to a team you are on (not just to you).
+include_team_review_requests = false

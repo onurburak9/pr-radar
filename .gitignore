@@ -1,0 +1,7 @@
+.superpowers/
+*.sqlite
+*.db
+__pycache__/
+.venv/
+swiftbar/
+config.toml
